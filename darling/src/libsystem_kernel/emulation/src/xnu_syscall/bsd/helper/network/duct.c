@@ -9,6 +9,10 @@
 #include <darling/emulation/common/bsdthread/per_thread_wd.h>
 
 #include <stddef.h>
+#include <stdint.h>
+#include <string.h>
+#include <darling/emulation/common/simple.h>
+#include <darlingserver/rpc.h>
 
 unsigned long sockaddr_fixup_size_from_bsd(const void* bsd_sockaddr, int bsd_sockaddr_len) {
 	/* Callers allocate before conversion validates the supplied length. */
@@ -54,6 +58,96 @@ static void copy_path(char* dest, __SIZE_TYPE__ dest_size, const struct sockaddr
 	dest[max] = '\0';
 }
 
+struct unix_socket_root {
+	char canonical[4096];
+	char alias[80];
+};
+
+static int unix_socket_root(struct unix_socket_root* root) {
+	uint64_t length = 0;
+	int32_t server = -1, descriptor = -1;
+	int result = dserver_rpc_vchroot_socket_root(root->canonical, sizeof(root->canonical),
+		&length, &server, &descriptor);
+	if (result < 0)
+		return errno_linux_to_bsd(result);
+	if (length == 0 || length >= sizeof(root->canonical) || server <= 0 || descriptor < 0 ||
+		root->canonical[0] != '/' || root->canonical[length] != '\0')
+		return -EINVAL;
+	for (uint64_t i = 0; i < length; i++)
+		if (root->canonical[i] == '\0')
+			return -EINVAL;
+	if (length > 1 && root->canonical[length - 1] == '/')
+		return -EINVAL;
+	result = __simple_snprintf(root->alias, sizeof(root->alias), "/proc/%d/fd/%d", server, descriptor);
+	if (result < 0 || result >= (int) sizeof(root->alias))
+		return -ENAMETOOLONG;
+	return 0;
+}
+
+static const char* unix_root_suffix(const char* path, const char* root) {
+	unsigned long length = strlen(root);
+	if (length == 1 && root[0] == '/')
+		return path[0] == '/' ? path : NULL;
+	if (strncmp(path, root, length) || (path[length] != '\0' && path[length] != '/'))
+		return NULL;
+	return path + length;
+}
+
+static int unix_shorten_path(char* path) {
+	struct unix_socket_root root;
+	int result = unix_socket_root(&root);
+	if (result < 0)
+		return result;
+	const char* suffix = unix_root_suffix(path, root.canonical);
+	if (suffix == NULL)
+		return -ENAMETOOLONG; // Never redirect an intentional outside-root path.
+	unsigned long alias_length = strlen(root.alias), suffix_length = strlen(suffix);
+	if (alias_length + suffix_length >= SOCKADDR_FIXUP_LINUX_PATH_MAX)
+		return -ENAMETOOLONG;
+	memmove(path + alias_length, suffix, suffix_length + 1);
+	memcpy(path, root.alias, alias_length);
+	return 0;
+}
+
+static int unix_canonical_suffix(const char* suffix) {
+	if (*suffix != '/')
+		return 0;
+	while (*suffix) {
+		const char* start = ++suffix;
+		while (*suffix && *suffix != '/') suffix++;
+		unsigned long length = suffix - start;
+		if (length == 0 || (length == 1 && start[0] == '.') ||
+			(length == 2 && start[0] == '.' && start[1] == '.'))
+			return 0;
+	}
+	return 1;
+}
+
+static int unix_unexpand_path(struct vchroot_unexpand_args* path) {
+	if (strncmp(path->path, "/proc/", 6) == 0) {
+		struct unix_socket_root root;
+		int result = unix_socket_root(&root);
+		if (result < 0)
+			return result;
+		const char* suffix = unix_root_suffix(path->path, root.alias);
+		if (suffix != NULL && unix_canonical_suffix(suffix)) {
+			struct vchroot_expand_args verified;
+			verified.flags = VCHROOT_FOLLOW;
+			verified.dfd = get_perthread_wd();
+			strcpy(verified.path, suffix);
+			result = vchroot_expand(&verified);
+			if (result < 0)
+				return errno_linux_to_bsd(result);
+			const char* canonical_suffix = unix_root_suffix(verified.path, root.canonical);
+			if (canonical_suffix != NULL && strcmp(canonical_suffix, suffix) == 0) {
+				memmove(path->path, suffix, strlen(suffix) + 1);
+				return 0;
+			}
+		}
+	}
+	return errno_linux_to_bsd(vchroot_unexpand(path));
+}
+
 int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* bsd_sockaddr, int bsd_sockaddr_len) {
 	int ret = bsd_sockaddr_len;
 	if (bsd_sockaddr_len < 2 || bsd_sockaddr_len > 512)
@@ -81,11 +175,13 @@ int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* bsd_sockaddr
 		if (ret < 0)
 			return errno_linux_to_bsd(ret);
 
-		/* A shortened name can denote a different socket or even its parent
-		 * directory. Reject before copying; a later root-alias mapping may
-		 * supply a representable spelling of the same endpoint. */
-		if (strlen(vc.path) >= sizeof(out->sun_path))
-			return -ENAMETOOLONG;
+		/* A shortened name can denote another endpoint or its parent directory.
+		 * Use only a reversible spelling of this same filesystem endpoint. */
+		if (strlen(vc.path) >= sizeof(out->sun_path)) {
+			ret = unix_shorten_path(vc.path);
+			if (ret < 0)
+				return ret;
+		}
 		strncpy(out->sun_path, vc.path, sizeof(out->sun_path) - 1);
 		out->sun_path[sizeof(out->sun_path) - 1] = '\0';
 		/* + 1 for the NUL terminator: a sockaddr length is the offset of the
@@ -119,9 +215,9 @@ int sockaddr_fixup_from_linux(struct sockaddr_fixup* out, const void* linux_sock
 
 		copy_path(vc.path, sizeof(vc.path), out, linux_sockaddr_len);
 
-		ret = vchroot_unexpand(&vc);
+		ret = unix_unexpand_path(&vc);
 		if (ret < 0)
-			return errno_linux_to_bsd(ret);
+			return ret;
 
 		/* Darwin's pathname field is narrower than Linux's. Length-bounded
 		 * names may fill all 104 bytes without a terminating NUL. */

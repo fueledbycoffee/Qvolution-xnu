@@ -31,6 +31,8 @@ struct vchroot_unexpand_args {char path[4096];};
 #define VCHROOT_FOLLOW 1
 static int failReverse,accepted,closed,flagCalls,nativeCalls,nativeOverride=-1;
 static const int acceptedFD=73;
+#define __simple_snprintf snprintf
+static int dserver_rpc_vchroot_socket_root(char*p,uint64_t size,uint64_t*length,int32_t*pid,int32_t*fd){return -ENAMETOOLONG;}
 static int get_perthread_wd(void){return -100;}
 static int sfamily_bsd_to_linux(int f){return f;}
 static int sfamily_linux_to_bsd(int f){return f;}

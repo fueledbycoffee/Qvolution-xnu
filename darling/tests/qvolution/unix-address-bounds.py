@@ -25,6 +25,8 @@ struct vchroot_unexpand_args {char path[4096];};
 #define VCHROOT_FOLLOW 1
 static char prefix[4096], reversePrefix[4096];
 static int expansions;
+#define __simple_snprintf snprintf
+static int dserver_rpc_vchroot_socket_root(char*p,uint64_t size,uint64_t*length,int32_t*pid,int32_t*fd){return -ENAMETOOLONG;}
 static int get_perthread_wd(void){return -100;}
 static int sfamily_bsd_to_linux(int f){return f==30?10:f;}
 static int sfamily_linux_to_bsd(int f){return f==10?30:f;}
