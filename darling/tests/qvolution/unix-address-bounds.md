@@ -1,0 +1,15 @@
+# UNIX address conversion bounds prerequisite
+
+Current AF_LOCAL conversion expands a guest pathname to its host-prefix pathname and silently strncpy-truncates it to107 bytes. In an original coordinator-run long-prefix fixture, a valid47byte guest path expands115bytes: the shortened path is the existing106byte parent directory plus '/', and bind returns errno48. A55byte prefix passes two exact binds/name roundtrips and send/recv; a68byte prefix fails at the first bind. These are owned-source/owned-prefix observations, not a vendor-internal trace.
+
+The prerequisite rejects unrepresentable expanded names before copying, Negative/too-short/extreme supplied lengths are rejected before raw family access or signed-to-unsigned allocation. Local inputs cannot exceed Darwin's struct sockaddr_un layout. A full104byte length-bounded non-NUL guest path is valid and is copied into the larger vchroot buffer before appending a terminator; normal SUN_LEN inputs need not include a NUL. Existing short names/family conversion remain unchanged.
+
+`python3 darling/tests/qvolution/unix-address-bounds.py` compiles the actual current duct.c conversion bodies and actual layout header with explicit synthetic vchroot/family/errno services. Address/undefined-behavior sanitizers check boundary paths and malformed lengths; leak detection is disabled because this runner environment cannot run LSan, and the harness owns no dynamic allocations. The host errno constant for ENAMETOOLONG is explicitly replaced with Darwin63 in the model. No syscall behavior is stubbed into a runtime pass: this is source conversion testing, not guest transport.
+
+`--source OLD_DUCT_C` runs the same original test against an exact prior source body. Parent c78886ab fails the115byte no-truncation assertion; candidate passes expanded107/108 boundaries, guest103/104, optional NUL, invalid lengths and IPv4 identity. Actual production conversion object compiles in isolated scratch using the existing recipe. Root retains any guest build/run/staging ownership.
+
+This guard alone intentionally leaves valid short guest paths in long host prefixes unsupported with an honest ENAMETOOLONG. It does not claim Keka fixed. The next separately reviewed milestone is reversible server-retained root-FD alias mapping, preserving real filesystem endpoints and cross-process returned guest names, subject to procfs permission/lifetime proof and remaining explicit alias length limits.
+
+Reverse conversion guards are deliberately deferred to the separate bounded native-address/copyout prerequisite. Existing accept error handling must close only its newly accepted descriptor on conversion failure; introducing reverse rejection alone would expose its existing ownership bug. This incoming-only commit does not claim safe reverse copyout.
+
+Apple public XNU unp_bind/unp_connect source explicitly copies length-bounded sun_path bytes to a larger buffer and appends NUL, confirming a104byte non-NUL input is valid: https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/uipc_usrreq.c . No Apple binary or SDK was inspected.

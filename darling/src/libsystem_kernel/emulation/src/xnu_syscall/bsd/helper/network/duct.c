@@ -1,6 +1,7 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/network/duct.h>
 
 #include <sys/socket.h>
+#include <sys/errno.h>
 
 #include <darling/emulation/conversion/network/duct.h>
 #include <darling/emulation/conversion/errno.h>
@@ -10,6 +11,9 @@
 #include <stddef.h>
 
 unsigned long sockaddr_fixup_size_from_bsd(const void* bsd_sockaddr, int bsd_sockaddr_len) {
+	/* Callers allocate before conversion validates the supplied length. */
+	if (bsd_sockaddr_len < 2 || bsd_sockaddr_len > 512)
+		return sizeof(struct sockaddr_fixup);
 	unsigned long size = bsd_sockaddr_len;
 
 	/* A PF_LOCAL sockaddr is rewritten in place, so the buffer has to hold the
@@ -52,6 +56,15 @@ static void copy_path(char* dest, __SIZE_TYPE__ dest_size, const struct sockaddr
 
 int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* bsd_sockaddr, int bsd_sockaddr_len) {
 	int ret = bsd_sockaddr_len;
+	if (bsd_sockaddr_len < 2 || bsd_sockaddr_len > 512)
+		return -EINVAL;
+	const struct sockaddr_fixup* input = bsd_sockaddr;
+	if (input->bsd_family == PF_LOCAL) {
+		const int offset = (int) offsetof(struct sockaddr_fixup, bsd_sun_path);
+		if (bsd_sockaddr_len > offset + SOCKADDR_FIXUP_BSD_PATH_MAX)
+			return -EINVAL;
+
+	}
 
 	memcpy(out, bsd_sockaddr, bsd_sockaddr_len);
 
@@ -68,6 +81,11 @@ int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* bsd_sockaddr
 		if (ret < 0)
 			return errno_linux_to_bsd(ret);
 
+		/* A shortened name can denote a different socket or even its parent
+		 * directory. Reject before copying; a later root-alias mapping may
+		 * supply a representable spelling of the same endpoint. */
+		if (strlen(vc.path) >= sizeof(out->sun_path))
+			return -ENAMETOOLONG;
 		strncpy(out->sun_path, vc.path, sizeof(out->sun_path) - 1);
 		out->sun_path[sizeof(out->sun_path) - 1] = '\0';
 		/* + 1 for the NUL terminator: a sockaddr length is the offset of the
