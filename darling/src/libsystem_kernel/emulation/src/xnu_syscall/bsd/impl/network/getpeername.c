@@ -14,25 +14,19 @@ extern char *strncpy(char *dest, const char *src, __SIZE_TYPE__ n);
 
 long sys_getpeername(int fd, void* asa, int* socklen)
 {
+	int capacity = sockaddr_fixup_output_capacity(asa, socklen);
+	if (capacity < 0)
+		return capacity;
+	union sockaddr_fixup_storage native;
+	int native_length = sizeof(native);
 	int ret;
-	struct sockaddr_fixup* fixed;
-
 #ifdef __NR_socketcall
 	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_GETPEERNAME,
-		((long[6]) { fd, asa, socklen }));
+		((long[6]) { fd, native.bytes, &native_length }));
 #else
-	ret = LINUX_SYSCALL(__NR_getpeername, fd, asa, socklen);
+	ret = LINUX_SYSCALL(__NR_getpeername, fd, native.bytes, &native_length);
 #endif
-
 	if (ret < 0)
-		ret = errno_linux_to_bsd(ret);
-	else
-	{
-		fixed = (struct sockaddr_fixup*) asa;
-		ret = *socklen = sockaddr_fixup_from_linux(fixed, asa, *socklen);
-		if (ret > 0)
-			ret = 0;
-	}
-
-	return ret;
+		return errno_linux_to_bsd(ret);
+	return sockaddr_fixup_copyout(asa, capacity, socklen, native.bytes, native_length);
 }

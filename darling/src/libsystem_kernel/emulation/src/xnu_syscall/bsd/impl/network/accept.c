@@ -1,6 +1,7 @@
 #include <darling/emulation/xnu_syscall/bsd/impl/network/accept.h>
 
 #include <sys/fcntl.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/unistd/close.h>
 
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/errno.h>
@@ -21,13 +22,21 @@ long sys_accept(int fd, void* from, int* socklen)
 
 long sys_accept_nocancel(int fd, void* from, int* socklen)
 {
+	int capacity = 0;
+	if (from != NULL) {
+		capacity = sockaddr_fixup_output_capacity(from, socklen);
+		if (capacity < 0)
+			return capacity;
+	}
+	union sockaddr_fixup_storage native;
+	int native_length = sizeof(native);
+	void* native_address = from != NULL ? native.bytes : NULL;
+	int* native_size = from != NULL ? &native_length : NULL;
 	int ret;
-	struct sockaddr_fixup* fixed;
-
 	// DARLING-ANDROID: the host kernel rejects __NR_accept (202) and the
 	// __NR_socketcall path with SIGSYS; use __NR_accept4 (242) with flags=0,
 	// which is exactly what Bionic's own accept() uses on this device.
-	ret = LINUX_SYSCALL(__NR_accept4, fd, from, socklen, 0);
+	ret = LINUX_SYSCALL(__NR_accept4, fd, native_address, native_size, 0);
 
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
@@ -35,16 +44,13 @@ long sys_accept_nocancel(int fd, void* from, int* socklen)
 	{
 		int accepted_fd = ret;
 
-		if (from != NULL && socklen != NULL)
-		{
-			fixed = (struct sockaddr_fixup*) from;
-			int conv = sockaddr_fixup_from_linux(fixed, from, *socklen);
-			if (conv < 0)
-				ret = conv;
-			else
-				*socklen = conv;
+		if (from != NULL) {
+			int converted = sockaddr_fixup_copyout(from, capacity, socklen, native.bytes, native_length);
+			if (converted < 0) {
+				sys_close_nocancel(accepted_fd);
+				return converted;
+			}
 		}
-
 		// on macOS (and BSD), accept-ed sockets inherit O_NONBLOCK
 		int parent_flags = sys_fcntl_nocancel(fd, F_GETFL, 0);
 		int child_flags = sys_fcntl_nocancel(accepted_fd, F_GETFL, 0);

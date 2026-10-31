@@ -101,12 +101,20 @@ int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* bsd_sockaddr
 
 int sockaddr_fixup_from_linux(struct sockaddr_fixup* out, const void* linux_sockaddr, int linux_sockaddr_len) {
 	int ret = linux_sockaddr_len;
+	if (linux_sockaddr_len == 0)
+		return 0; // recvfrom may report no source address.
+	if (linux_sockaddr_len < 2 || linux_sockaddr_len > SOCKADDR_FIXUP_STORAGE_MAX)
+		return -EINVAL;
 
 	memcpy(out, linux_sockaddr, linux_sockaddr_len);
 
 	out->bsd_family = sfamily_linux_to_bsd(out->linux_family);
 
 	if (out->bsd_family == PF_LOCAL) {
+		if (linux_sockaddr_len == (int) offsetof(struct sockaddr_fixup, sun_path)) {
+			out->bsd_length = linux_sockaddr_len;
+			return linux_sockaddr_len; // An unnamed local socket has no pathname.
+		}
 		struct vchroot_unexpand_args vc;
 
 		copy_path(vc.path, sizeof(vc.path), out, linux_sockaddr_len);
@@ -115,12 +123,17 @@ int sockaddr_fixup_from_linux(struct sockaddr_fixup* out, const void* linux_sock
 		if (ret < 0)
 			return errno_linux_to_bsd(ret);
 
-		/* out is the guest's own buffer here, which is a Darwin
-		 * struct sockaddr_un, so the write is bounded by the Darwin path
-		 * capacity and not by the wider Linux one. */
-		strncpy(out->bsd_sun_path, vc.path, sizeof(out->bsd_sun_path) - 1);
-		out->bsd_sun_path[sizeof(out->bsd_sun_path) - 1] = '\0';
-		ret = (int) (offsetof(struct sockaddr_fixup, bsd_sun_path) + strlen(out->bsd_sun_path) + 1);
+		/* Darwin's pathname field is narrower than Linux's. Length-bounded
+		 * names may fill all 104 bytes without a terminating NUL. */
+		unsigned long path_length = strlen(vc.path);
+		if (path_length > sizeof(out->bsd_sun_path))
+			return -ENAMETOOLONG;
+		memcpy(out->bsd_sun_path, vc.path, path_length);
+		ret = (int) (offsetof(struct sockaddr_fixup, bsd_sun_path) + path_length);
+		if (path_length < sizeof(out->bsd_sun_path)) {
+			out->bsd_sun_path[path_length] = '\0';
+			ret++;
+		}
 	}
 
 	if (ret >= 0) {
@@ -128,4 +141,34 @@ int sockaddr_fixup_from_linux(struct sockaddr_fixup* out, const void* linux_sock
 	}
 
 	return ret;
+}
+
+
+int sockaddr_fixup_output_capacity(const void* address, const int* length) {
+	if (length == NULL)
+		return -EFAULT;
+	int capacity = *length;
+	if (capacity < 0)
+		return -EINVAL;
+	if (capacity > 0 && address == NULL)
+		return -EFAULT;
+	return capacity;
+}
+
+int sockaddr_fixup_copyout(void* address, int capacity, int* length,
+	const void* native_address, int native_length) {
+	if (length == NULL || (capacity > 0 && address == NULL) ||
+		(native_length > 0 && native_address == NULL))
+		return -EFAULT;
+	if (capacity < 0 || native_length < 0 || native_length > SOCKADDR_FIXUP_STORAGE_MAX)
+		return -EINVAL;
+	union sockaddr_fixup_storage translated;
+	int converted = sockaddr_fixup_from_linux(&translated.address, native_address, native_length);
+	if (converted < 0)
+		return converted;
+	int copied = capacity < converted ? capacity : converted;
+	if (copied > 0)
+		memcpy(address, translated.bytes, copied);
+	*length = converted;
+	return 0;
 }

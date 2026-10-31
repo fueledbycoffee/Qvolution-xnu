@@ -50,6 +50,18 @@ _Static_assert(sizeof(((struct sockaddr_fixup*) 0)->sun_path) == SOCKADDR_FIXUP_
 _Static_assert(sizeof(struct sockaddr_fixup) == SOCKADDR_FIXUP_LINUX_PATH_MAX + 2,
 	"sockaddr_fixup must be exactly as large as the host's struct sockaddr_un");
 
+#define SOCKADDR_FIXUP_STORAGE_MAX 512
+union sockaddr_fixup_storage {
+	struct sockaddr_fixup address;
+	unsigned char bytes[SOCKADDR_FIXUP_STORAGE_MAX];
+};
+
+/* Snapshot/check the caller capacity before a syscall consumes data or accepts. */
+int sockaddr_fixup_output_capacity(const void* address, const int* length);
+/* Translate in private storage, then copy at most the captured guest capacity. */
+int sockaddr_fixup_copyout(void* address, int capacity, int* length,
+	const void* native_address, int native_length);
+
 unsigned long sockaddr_fixup_size_from_bsd(const void* bsd_sockaddr, int bsd_sockaddr_len);
 int sockaddr_fixup_from_bsd(struct sockaddr_fixup* out, const void* bsd_sockaddr, int bsd_sockaddr_len);
 int sockaddr_fixup_from_linux(struct sockaddr_fixup* out, const void* linux_sockaddr, int linux_sockaddr_len);
