@@ -2,6 +2,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <sys/errno.h>
 #include <sys/spawn.h>
 #include <sys/fcntl.h>
 #include <_libkernel_init.h>
@@ -29,6 +30,7 @@
 #include <darling/emulation/other/mach/lkm.h>
 #include <darling/emulation/common/simple.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/process/fork.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/process/wait4.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/chdir.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/unistd/fchdir.h>
 #include <darling/emulation/xnu_syscall/bsd/impl/fcntl/fcntl.h>
@@ -356,15 +358,26 @@ fail:
 		if (my_pid < 0)
 		{
 			ret = my_pid;
+			close_internal(pipe[0]);
 			goto out;
 		}
 
-		if (pid != NULL)
-			*pid = my_pid;
-
-		if (sys_read(pipe[0], &ret, sizeof(ret)) != sizeof(ret))
+		long error_bytes;
+		do {
+			error_bytes = sys_read(pipe[0], &ret, sizeof(ret));
+		} while (error_bytes == -EINTR);
+		if (error_bytes != sizeof(ret))
 			ret = 0;
 		close_internal(pipe[0]);
+
+		if (ret != 0) {
+			// The child reported setup/exec failure and exits immediately. It must
+			// not escape as a caller-owned child when spawn returns an error.
+			int status;
+			while (sys_wait4_nocancel(my_pid, &status, 0, NULL) == -EINTR) {}
+		} else if (pid != NULL) {
+			*pid = my_pid;
+		}
 	}
 
 out:
