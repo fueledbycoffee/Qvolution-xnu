@@ -85,8 +85,11 @@ static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hoo
 
 static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
 	long int ret = 0;
+	const size_t control_capacity = out_message->msg_controllen;
 
 retry:
+	// recvmsg replaces the capacity with the length received, including zero.
+	out_message->msg_controllen = control_capacity;
 #ifdef __NR_socketcall
 	ret = LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_RECVMSG, ((long[6]) { socket, out_message, 0 }));
 #else
