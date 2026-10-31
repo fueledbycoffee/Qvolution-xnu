@@ -15,6 +15,7 @@ import tempfile
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('superproject', type=Path)
 parser.add_argument('--out', type=Path)
+parser.add_argument('--darlingserver', type=Path, help='RPC generator source (defaults to superproject component)')
 args = parser.parse_args()
 xnu = Path(__file__).resolve().parents[2]
 header = xnu / 'darling/src/libsystem_kernel/emulation/include/linux_premigration/resources/dserver-rpc-defs.h'
@@ -24,6 +25,15 @@ end = source.index('\n#define dserver_rpc_hooks_get_bad_message_status()', start
 function = source[start:end]
 out = args.out or Path(tempfile.mkdtemp(prefix='s2c-receive-'))
 out.mkdir(parents=True, exist_ok=True)
+server = (args.darlingserver or args.superproject / 'src/external/darlingserver').resolve()
+generator = server / 'scripts/generate-rpc-wrappers.py'
+generate = ['python3', str(generator), str(out / 'rpc.h'), str(out / 'rpc.internal.h'),
+            str(out / 'rpc.c'), '"rpc.h"']
+subprocess.run(generate, check=True)
+rpc = (out / 'rpc.c').read_text()
+start = rpc.index('int dserver_rpc_explicit_interrupt_enter(')
+end = rpc.index('\nint dserver_rpc_interrupt_enter(', start)
+wrapper = rpc[start:end]
 adapter = r'''
 #define _GNU_SOURCE
 #include <assert.h>
@@ -39,9 +49,16 @@ adapter = r'''
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <darlingserver/rpc-supplement.h>
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wattributes"
+#pragma GCC diagnostic ignored "-Wunused-function"
+#include "rpc.h"
+#pragma GCC diagnostic pop
 
 #define dserver_rpc_hooks_msghdr_t struct msghdr
 #define dserver_rpc_hooks_cmsghdr_t struct cmsghdr
+#define dserver_rpc_hooks_iovec_t struct iovec
+#define DSERVER_RPC_HOOKS_CMSG_SPACE CMSG_SPACE
 #define DSERVER_RPC_HOOKS_CMSG_FIRSTHDR CMSG_FIRSTHDR
 #define DSERVER_RPC_HOOKS_CMSG_LEN CMSG_LEN
 #define DSERVER_RPC_HOOKS_CMSG_DATA CMSG_DATA
@@ -49,7 +66,7 @@ adapter = r'''
 #define DSERVER_RPC_HOOKS_SCM_RIGHTS SCM_RIGHTS
 #define dserver_rpc_hooks_memcpy memcpy
 #define dserver_rpc_hooks_get_pid getpid
-#define dserver_rpc_hooks_get_tid() syscall(SYS_gettid)
+#define dserver_rpc_hooks_get_tid() ((int)syscall(SYS_gettid))
 #define dserver_rpc_hooks_get_architecture() 2
 #define dserver_rpc_hooks_get_server_address() NULL
 #define dserver_rpc_hooks_get_server_address_length() 0
@@ -61,6 +78,8 @@ static long linux_result(long result) {
 }
 /* The sandbox blocks sendto even on socketpairs. Adapt only that operation
  * to a real sendmsg on the connected socket; recvmsg/mmap/munmap stay real. */
+static size_t last_control_length;
+static int last_message_flags;
 static long native_syscall(long number, ...) {
     va_list args;
     va_start(args, number);
@@ -78,6 +97,8 @@ static long native_syscall(long number, ...) {
         struct msghdr *message = va_arg(args, struct msghdr *);
         int flags = va_arg(args, int);
         result = recvmsg(socket, message, flags);
+        last_control_length = message->msg_controllen;
+        last_message_flags = message->msg_flags;
     } else if (number == __NR_mmap) {
         uint64_t address = va_arg(args, uint64_t), length = va_arg(args, uint64_t);
         int protection = va_arg(args, int), flags = va_arg(args, int), fd = va_arg(args, int);
@@ -98,6 +119,40 @@ static long native_syscall(long number, ...) {
 #define LINUX_SYSCALL native_syscall
 #define LINUX_SYSCALL2 LINUX_SYSCALL
 #define LINUX_SYSCALL3 LINUX_SYSCALL
+'''
+wrapper_adapter = r'''
+#define dserver_rpc_hooks_atomic_save_t int
+#define dserver_rpc_hooks_atomic_begin(save) ((void)(save))
+#define dserver_rpc_hooks_atomic_end(save) ((void)(save))
+#define dserver_rpc_hooks_get_interrupt_status() (-EINTR)
+#define dserver_rpc_hooks_get_communication_error_status() (-ECOMM)
+#define dserver_rpc_hooks_printf(...) fprintf(stderr, __VA_ARGS__)
+static long dserver_rpc_hooks_send_message(int socket, struct msghdr *message) {
+    return linux_result(sendmsg(socket, message, 0));
+}
+static int pushed_replies, pushed_fds;
+/* Adapt server-side deferral at its interface; validate the actual received
+ * ancillary length and descriptor before the generated wrapper retries. */
+static void dserver_rpc_hooks_push_reply(int socket, struct msghdr *message, long size) {
+    (void)socket;
+    assert(size == sizeof(dserver_rpc_replyhdr_t));
+    assert(!(message->msg_flags & MSG_CTRUNC));
+    struct cmsghdr *cmsg = CMSG_FIRSTHDR(message);
+    if (pushed_replies == 0) {
+        assert(!cmsg && message->msg_controllen == 0);
+    } else {
+        assert(pushed_replies == 1);
+        assert(cmsg && cmsg->cmsg_level == SOL_SOCKET && cmsg->cmsg_type == SCM_RIGHTS);
+        int fd;
+        memcpy(&fd, CMSG_DATA(cmsg), sizeof(fd));
+        char bytes[7];
+        assert(pread(fd, bytes, sizeof(bytes), 0) == sizeof(bytes));
+        assert(!memcmp(bytes, "shared", sizeof(bytes)));
+        assert(close(fd) == 0);
+        ++pushed_fds;
+    }
+    ++pushed_replies;
+}
 '''
 harness = r'''
 static void send_packet(int socket, const void *data, size_t size, int fd) {
@@ -134,6 +189,40 @@ int main(int argc, char **argv) {
         .length = 4096, .protection = PROT_READ | PROT_WRITE,
         .flags = MAP_SHARED, .fd = 0,
     };
+    int retry = !strncmp(argv[1], "retry-", 6);
+    if (retry) {
+        dserver_rpc_replyhdr_t unrelated = { .number = dserver_callnum_checkout };
+        send_packet(sockets[0], &unrelated, sizeof(unrelated), -1);
+        if (!strcmp(argv[1], "retry-s2c-fd")) {
+            send_packet(sockets[0], &map, sizeof(map), fd);
+        } else {
+            send_packet(sockets[0], &unrelated, sizeof(unrelated), fd);
+        }
+        dserver_rpc_reply_interrupt_enter_t reply = {
+            .header = { .number = dserver_callnum_interrupt_enter, .code = 0 },
+        };
+        send_packet(sockets[0], &reply, sizeof(reply), -1);
+        assert(dserver_rpc_explicit_interrupt_enter(sockets[1]) == 0);
+        assert(last_control_length == 0 && !(last_message_flags & MSG_CTRUNC));
+        assert(pushed_replies == (!strcmp(argv[1], "retry-s2c-fd") ? 1 : 2));
+        assert(pushed_fds == (!strcmp(argv[1], "retry-s2c-fd") ? 0 : 1));
+        dserver_rpc_call_interrupt_enter_t call;
+        assert(recv(sockets[0], &call, sizeof(call), 0) == sizeof(call));
+        assert(call.header.number == dserver_callnum_interrupt_enter);
+        if (!strcmp(argv[1], "retry-s2c-fd")) {
+            dserver_s2c_reply_mmap_t mapped;
+            assert(recv(sockets[0], &mapped, sizeof(mapped), 0) == sizeof(mapped));
+            assert(mapped.errno_result == 0);
+            assert(!memcmp((void *)(uintptr_t)mapped.address, "shared", 7));
+            assert(munmap((void *)(uintptr_t)mapped.address, 4096) == 0);
+        }
+        assert(munmap(old, 4096) == 0);
+        close(fd);
+        close(sockets[0]);
+        close(sockets[1]);
+        printf("%s: generated interrupt_enter push_reply/retry_receive and real FD transfer passed\n", argv[1]);
+        return 0;
+    }
     send_packet(sockets[0], &unmap, sizeof(unmap), -1);
     int maps = strcmp(argv[1], "ordinary-fd") ? 2 : 0;
     for (int i = 0; i < maps; ++i)
@@ -179,18 +268,20 @@ int main(int argc, char **argv) {
 }
 '''
 generated = out / 's2c-receive-capacity.c'
-generated.write_text(adapter + '\n' + function + '\n' + harness)
+generated.write_text(adapter + '\n' + function + '\n' + wrapper_adapter + '\n' + wrapper + '\n' + harness)
 binary = out / 's2c-receive-capacity'
 command = ['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror', '-Wno-int-conversion',
-           '-Wno-sign-compare', '-I' + str(args.superproject.resolve() / 'src/external/darlingserver/include'),
+           '-Wno-sign-compare', '-Wno-unused-variable', '-I' + str(server / 'include'),
            str(generated), '-o', str(binary)]
 subprocess.run(command, check=True)
 rows = []
-for case in ('s2c-fd', 'ordinary-fd'):
+for case in ('s2c-fd', 'ordinary-fd', 'retry-s2c-fd', 'retry-ordinary-fd'):
     result = subprocess.run([str(binary), case], capture_output=True, text=True)
     rows.append(dict(case=case, exit=result.returncode, stdout=result.stdout, stderr=result.stderr))
 report = dict(header=str(header), header_sha256=hashlib.sha256(header.read_bytes()).hexdigest(),
-              compile=command, cases=rows)
+              generator=str(generator), generator_sha256=hashlib.sha256(generator.read_bytes()).hexdigest(),
+              generated_wrapper_sha256=hashlib.sha256(wrapper.encode()).hexdigest(),
+              generate=generate, compile=command, cases=rows)
 (out / 'result.json').write_text(json.dumps(report, indent=2) + '\n')
 print(json.dumps(report, indent=2))
 raise SystemExit(0 if all(row['exit'] == 0 for row in rows) else 1)
