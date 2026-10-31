@@ -91,6 +91,7 @@ enum { NR_get_api_version = DARLING_MACH_API_BASE,
 #define DARLING_MACH_API_COUNT (DARLING_MACH_API_ALMOST_COUNT - DARLING_MACH_API_BASE)
 
 void mach_driver_init(const char** applep);
+void mach_driver_setup_server_access(void);
 int lkm_call(int call_nr, void* arg);
 int lkm_call_raw(int call_nr, void* arg); // w/o errno translation
 int mach_driver_get_fd(void);

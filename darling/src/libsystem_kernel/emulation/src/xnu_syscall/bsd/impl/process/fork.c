@@ -71,6 +71,10 @@ long sys_fork(void)
 	else if (ret == 0)
 	{
 		// in the child
+		// posix_spawn uses this path without libSystem's atfork handlers. Reapply
+		// the existing process-local server access setup before any memory RPC.
+		// This is a direct syscall; it must not allocate or run client callbacks.
+		mach_driver_setup_server_access();
 
 		// the old RPC FD will be closed in `guard_table_postfork_child`;
 		// we don't need to close it ourselves.

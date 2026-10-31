@@ -35,7 +35,7 @@ static bool use_per_thread_driver_fd = false;
 
 extern void _xtrace_postfork_child(void);
 
-void mach_driver_init(const char** applep)
+void mach_driver_setup_server_access(void)
 {
 #ifndef LINUX_PR_SET_PTRACER
 #define LINUX_PR_SET_PTRACER 0x59616d61
@@ -44,6 +44,11 @@ void mach_driver_init(const char** applep)
 #define LINUX_PR_SET_PTRACER_ANY ((unsigned long)-1)
 #endif
 	LINUX_SYSCALL(__NR_prctl, LINUX_PR_SET_PTRACER, LINUX_PR_SET_PTRACER_ANY, 0UL, 0UL, 0UL);
+}
+
+void mach_driver_init(const char** applep)
+{
+	mach_driver_setup_server_access();
 
 #if defined(__aarch64__)
 	// Both the static dyld copy and the dynamic kernel copy publish TSD. The
