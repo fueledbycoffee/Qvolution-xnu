@@ -19,6 +19,7 @@ static inline int darling_i386_startup_enabled(const char* const entries[])
 
 #if defined(__i386__)
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
+extern int darling_i386_startup_records __attribute__((visibility("hidden")));
 static inline void darling_i386_startup_write(const char* record, unsigned int length)
 {
 	long result;
@@ -33,7 +34,10 @@ static inline void darling_i386_startup_write(const char* record, unsigned int l
 		darling_i386_startup_write(record, sizeof(record) - 1); \
 	} \
 } while (0)
+#define DARLING_I386_STARTUP_CURRENT(stage) \
+	DARLING_I386_STARTUP_STAGE(darling_i386_startup_records, stage)
 #else
+#define DARLING_I386_STARTUP_CURRENT(stage) ((void)0)
 #define DARLING_I386_STARTUP_STAGE(enabled, stage) ((void)0)
 #endif
 

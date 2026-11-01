@@ -16,15 +16,18 @@
 #include <darling/emulation/conversion/duct_errno.h>
 
 #include <darlingserver/rpc.h>
+#include <darling/emulation/common/i386-startup.h>
 
 #define UNIMPLEMENTED_TRAP() { char msg[] = "Called unimplemented Mach trap: "; write(2, msg, sizeof(msg)-1); write(2, __FUNCTION__, sizeof(__FUNCTION__)-1); write(2, "\n", 1); }
 
 mach_port_name_t mach_reply_port_impl(void)
 {
+	DARLING_I386_STARTUP_CURRENT("mach-reply-port-impl-enter");
 	unsigned int port_name;
 	if (dserver_rpc_mach_reply_port(&port_name) != 0) {
 		port_name = MACH_PORT_NULL;
 	}
+	DARLING_I386_STARTUP_CURRENT("mach-reply-port-impl-return");
 	return port_name;
 }
 
@@ -742,10 +745,12 @@ kern_return_t syscall_thread_switch_impl(
 
 mach_port_name_t task_self_trap_impl(void)
 {
+	DARLING_I386_STARTUP_CURRENT("task-self-trap-impl-enter");
 	unsigned int port_name;
 	if (dserver_rpc_task_self_trap(&port_name) != 0) {
 		port_name = MACH_PORT_NULL;
 	}
+	DARLING_I386_STARTUP_CURRENT("task-self-trap-impl-return");
 	return port_name;
 }
 

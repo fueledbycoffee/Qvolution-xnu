@@ -30,6 +30,9 @@
 #include <mach/mach_init.h>
 #include <sys/cdefs.h>
 #include "tsd.h"
+#ifdef DARLING
+#include <darling/emulation/common/i386-startup.h>
+#endif
 
 __XNU_PRIVATE_EXTERN mach_port_t _task_reply_port = MACH_PORT_NULL;
 
@@ -54,7 +57,13 @@ _mig_set_reply_port(mach_port_t port)
 mach_port_t
 mig_get_reply_port(void)
 {
+#ifdef DARLING
+	DARLING_I386_STARTUP_CURRENT("mig-reply-tsd-enter");
+#endif
 	mach_port_t port = _mig_get_reply_port();
+#ifdef DARLING
+	DARLING_I386_STARTUP_CURRENT("mig-reply-tsd-return");
+#endif
 	if (port == MACH_PORT_NULL) {
 		port = mach_reply_port();
 		_mig_set_reply_port(port);

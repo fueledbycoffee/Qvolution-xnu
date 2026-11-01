@@ -1,4 +1,5 @@
 #include <stddef.h>
+#include <darling/emulation/common/i386-startup.h>
 #include <sys/_types/_iovec_t.h>
 
 #include <darling/emulation/xnu_syscall/bsd/impl/network/recvmsg.h>
@@ -76,6 +77,7 @@ struct linux_sockaddr_un {
 #define dserver_rpc_hooks_memcpy memcpy
 
 static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hooks_msghdr_t* message) {
+	DARLING_I386_STARTUP_CURRENT("rpc-send-enter");
 #ifdef __NR_socketcall
 	return LINUX_SYSCALL(__NR_socketcall, LINUX_SYS_SENDMSG, ((long[6]) { socket, message, 0 }));
 #else
@@ -84,6 +86,7 @@ static long int dserver_rpc_hooks_send_message(int socket, const dserver_rpc_hoo
 };
 
 static long int dserver_rpc_hooks_receive_message(int socket, dserver_rpc_hooks_msghdr_t* out_message) {
+	DARLING_I386_STARTUP_CURRENT("rpc-receive-enter");
 	long int ret = 0;
 	const size_t control_capacity = out_message->msg_controllen;
 
@@ -95,6 +98,7 @@ retry:
 #else
 	ret = LINUX_SYSCALL(__NR_recvmsg, socket, out_message, 0);
 #endif
+	DARLING_I386_STARTUP_CURRENT("rpc-receive-syscall-return");
 	if (ret < 0) {
 		return ret;
 	}
@@ -277,7 +281,17 @@ retry:
 
 #define dserver_rpc_hooks_close_fd(fd) ((int)LINUX_SYSCALL1(__NR_close, fd))
 
+#if defined(__i386__)
+static int dserver_rpc_hooks_get_socket(void) {
+	DARLING_I386_STARTUP_CURRENT("rpc-socket-enter");
+	int socket = mach_driver_get_fd();
+	DARLING_I386_STARTUP_CURRENT("rpc-socket-return");
+	return socket;
+}
+#define dserver_rpc_hooks_get_socket dserver_rpc_hooks_get_socket
+#else
 #define dserver_rpc_hooks_get_socket mach_driver_get_fd
+#endif
 
 __attribute__((format(printf, 1, 2)))
 void __dserver_rpc_hooks_printf(const char* format, ...);
@@ -286,9 +300,11 @@ void __dserver_rpc_hooks_printf(const char* format, ...);
 #define dserver_rpc_hooks_atomic_save_t sigset_t
 
 static void dserver_rpc_hooks_atomic_begin(dserver_rpc_hooks_atomic_save_t* atomic_save) {
+	DARLING_I386_STARTUP_CURRENT("rpc-atomic-enter");
 	// block standard unix signals (not real-time signals, though)
 	sigset_t set = 0x7fffffff;
 	sys_sigprocmask(SIG_BLOCK, &set, atomic_save);
+	DARLING_I386_STARTUP_CURRENT("rpc-atomic-return");
 };
 
 static void dserver_rpc_hooks_atomic_end(dserver_rpc_hooks_atomic_save_t* atomic_save) {
