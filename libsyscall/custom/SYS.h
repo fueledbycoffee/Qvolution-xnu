@@ -90,6 +90,18 @@
 2:
 #endif
 
+/* Only lseek's Darling handler returns a full EDX:EAX value. */
+#ifdef DARLING
+#define UNIX_SYSCALL_INT_ERROR(name, cerror) \
+	.if SYS_##name == SYS_lseek		;\
+	cmpl	$-1, %edx			;\
+	jne	2f				;\
+	.endif					;\
+	UNIX_SYSCALL_ERROR(cerror)
+#else
+#define UNIX_SYSCALL_INT_ERROR(name, cerror) UNIX_SYSCALL_ERROR(cerror)
+#endif
+
 #define UNIX_SYSCALL(name, nargs)			\
 	.globl	tramp_cerror				;\
 LEAF(_##name, 0)					;\
@@ -102,9 +114,7 @@ LEAF(_##name, 0)					;\
 LEAF(_##name, 0)					;\
 	movl	$ SYS_##name, %eax			;\
 	UNIX_SYSCALL_TRAP				;\
-	jnb	2f					;\
-	BRANCH_EXTERN(tramp_cerror)			;\
-2:
+	UNIX_SYSCALL_INT_ERROR(name, cerror)
 
 #if defined(__SYSCALL_32BIT_ARG_BYTES) && ((__SYSCALL_32BIT_ARG_BYTES >= 4) && (__SYSCALL_32BIT_ARG_BYTES <= 20))
 #define UNIX_SYSCALL_NONAME(name, nargs, cerror)			\
@@ -122,9 +132,7 @@ LEAF(_##name, 0)					;\
 	.globl	tramp_cerror_nocancel			;\
 	movl	$ SYS_##name, %eax			;\
 	UNIX_SYSCALL_TRAP				;\
-	jnb	2f					;\
-	BRANCH_EXTERN(tramp_cerror_nocancel)		;\
-2:
+	UNIX_SYSCALL_INT_ERROR(name, cerror_nocancel)
 
 #define PSEUDO(pseudo, name, nargs, cerror)	\
 LEAF(pseudo, 0)					;\

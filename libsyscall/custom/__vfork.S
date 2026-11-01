@@ -64,27 +64,50 @@ LEAF(___vfork, 0)
 	lock
 	cmpxchgl	%ecx, __current_pid
 	jne		0b
+#ifndef DARLING
 	popl		%ecx
+#endif
 	movl		$(SYS_vfork), %eax	// code for vfork -> eax
 	UNIX_SYSCALL_TRAP			// do the system call
+#ifdef DARLING
+	cmpl		$-4095, %eax
+	jb		L1
+	negl		%eax
+#else
 	jnb		L1                     	// jump if CF==0
+#endif
 	GET_CURRENT_PID
 	lock
 	incl		__current_pid
+#ifndef DARLING
 	pushl		%ecx
+#endif
 	BRANCH_EXTERN(tramp_cerror)
 
 L1:
+#ifdef DARLING
+	testl		%eax, %eax
+	jnz		L2
+#else
 	testl		%edx, %edx		// CF=OF=0,  ZF set if zero result
 	jz		L2			// parent, since r1 == 0 in parent, 1 in child
+#endif
 	xorl		%eax, %eax		// zero eax
+#ifdef DARLING
+	ret
+#else
 	jmp		*%ecx
+#endif
 
 L2:
 	GET_CURRENT_PID
 	lock
 	incl		__current_pid
+#ifdef DARLING
+	ret
+#else
 	jmp		*%ecx
+#endif
 
 #elif defined(__x86_64__)
 
@@ -108,8 +131,9 @@ LEAF(___vfork, 0)
 #ifdef DARLING
 	movl	$ SYS_vfork, %eax
 	call	__darling_bsd_syscall
-	cmpq	$0, %rax
-	jnb L1
+	cmpq	$-4095, %rax
+	jb L1
+	negq	%rax
 #else
 	popq		%rdi			// return address in %rdi
 	movq		$ SYSCALL_CONSTRUCT_UNIX(SYS_vfork), %rax	// code for vfork -> rax

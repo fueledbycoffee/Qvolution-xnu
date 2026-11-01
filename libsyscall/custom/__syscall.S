@@ -44,9 +44,7 @@ LEAF(___syscall, 0)
 #else
 	pushl	%ecx		// caller "pop" will work
 #endif
-	jnb	2f
-	BRANCH_EXTERN(tramp_cerror)
-2:
+	UNIX_SYSCALL_ERROR(cerror)
 END(___syscall)
 
 #elif defined(__x86_64__)

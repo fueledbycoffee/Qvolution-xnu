@@ -2,8 +2,8 @@
 """Execute the production i386 wrapper expansions in a native x86_64 adapter.
 
 The selected standard wrapper instructions also execute in long mode.
-Legacy INT wrappers (including 64-bit return values) are outside this fix. Only ULOCK's
-stack argument lookup is mapped to SysV's EDI. Trap/handler and errno storage
+INT and bespoke wrappers are tested in i386-wrapper-paths.py. Only ULOCK's
+stack argument lookup here is mapped to SysV's EDI. Trap/handler and errno storage
 are fixtures; no ia32 syscall or Darwin startup is claimed by this test.
 """
 import argparse
