@@ -5,6 +5,9 @@ endif()
 
 enable_testing()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+add_test(NAME exec-signal-libc-independence
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/exec-signal-native.py"
+        --out "${CMAKE_CURRENT_BINARY_DIR}/exec-signal")
 set(DARLING_SUPERPROJECT "" CACHE PATH "Darling superproject source tree")
 if(NOT DARLING_SUPERPROJECT)
     message(FATAL_ERROR "Set DARLING_SUPERPROJECT to the Darling source tree")
