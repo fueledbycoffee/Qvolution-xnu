@@ -1,5 +1,6 @@
 #include <darling/emulation/xnu_syscall/machdep/impl/tls.h>
 #include <stdint.h>
+#include <darling/emulation/common/simple.h>
 
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 
@@ -158,8 +159,14 @@ void sys_thread_set_tsd_base(void* ptr, int unk)
 		unsigned int  useable:1;
 	};
 
-	struct user_desc desc;
-	static int entry_number = -1;
+	struct user_desc desc = {0};
+	unsigned short selector;
+	__asm__ volatile("movw %%fs, %0" : "=r"(selector));
+	// Reuse the loader/dyld descriptor instead of exhausting Linux's three
+	// TLS slots when the dynamic libsystem_kernel copy takes over.
+	desc.entry_number = selector >> 3;
+	if ((selector & 7) != 3 || LINUX_SYSCALL(__NR_get_thread_area, &desc) != 0)
+		desc.entry_number = (unsigned int)-1;
 
 	desc.base_addr = (unsigned long) ptr;
 	desc.limit = 4096;
@@ -169,11 +176,8 @@ void sys_thread_set_tsd_base(void* ptr, int unk)
 	desc.limit_in_pages = 1;
 	desc.seg_not_present = 0;
 	desc.useable = 1;
-	desc.entry_number = entry_number;
-
-	LINUX_SYSCALL(__NR_set_thread_area, &desc);
-
-	entry_number = desc.entry_number;
+	if (LINUX_SYSCALL(__NR_set_thread_area, &desc) != 0)
+		__simple_abort();
 	__asm__ ("movl %0, %%fs" :: "r" (desc.entry_number*8 + 3));
 #elif defined(__aarch64__)
 	tsd_set(current_tid(), ptr);
