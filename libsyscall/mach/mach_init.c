@@ -65,6 +65,7 @@
 #ifdef DARLING
 #include <darling/emulation/conversion/duct_errno.h>
 #include <darlingserver/rpc.h>
+#include <darling/emulation/common/i386-startup.h>
 #endif
 
 mach_port_t bootstrap_port = MACH_PORT_NULL;
@@ -185,10 +186,16 @@ mach_init_doit(void)
 #endif
 {
 #ifdef DARLING
+	int startup_records = darling_i386_startup_enabled(applep);
+	DARLING_I386_STARTUP_STAGE(startup_records, "mach-init-enter");
 	mach_driver_init(applep);
+	DARLING_I386_STARTUP_STAGE(startup_records, "mach-driver-init-return");
 #endif
 
 	// Initialize cached mach ports defined in mach_init.h
+#ifdef DARLING
+	DARLING_I386_STARTUP_STAGE(startup_records, "mach-ports-enter");
+#endif
 	mach_task_self_ = task_self_trap();
 	_task_reply_port = mach_reply_port();
 	if (bootstrap_port == MACH_PORT_NULL) {
@@ -228,6 +235,15 @@ mach_init_doit(void)
 		vm_page_mask = vm_page_size - 1;
 	}
 
+#ifdef DARLING
+	DARLING_I386_STARTUP_STAGE(startup_records, "cpu-capabilities-enter");
+#endif
 	_init_cpu_capabilities();
+#ifdef DARLING
+	DARLING_I386_STARTUP_STAGE(startup_records, "pthread-set-self-enter");
+#endif
 	_pthread_set_self(0);
+#ifdef DARLING
+	DARLING_I386_STARTUP_STAGE(startup_records, "mach-init-return");
+#endif
 }
