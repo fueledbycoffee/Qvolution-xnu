@@ -103,9 +103,16 @@ retry:
 kern_return_t semaphore_signal_trap_impl(
 				mach_port_name_t signal_name)
 {
-	int code = dserver_rpc_semaphore_signal(signal_name);
+	int code;
+
+retry:
+	code = dserver_rpc_semaphore_signal(signal_name);
 
 	if (code < 0) {
+		// as for mach_msg above: EINTR from the RPC means the request was never sent to
+		// the server (a signal arrived first), so sending it again is safe
+		if (code == -LINUX_EINTR)
+			goto retry;
 		__simple_printf("semaphore_signal failed (internally): %d\n", code);
 		__simple_abort();
 	}
@@ -116,9 +123,16 @@ kern_return_t semaphore_signal_trap_impl(
 kern_return_t semaphore_signal_all_trap_impl(
 				mach_port_name_t signal_name)
 {
-	int code = dserver_rpc_semaphore_signal_all(signal_name);
+	int code;
+
+retry:
+	code = dserver_rpc_semaphore_signal_all(signal_name);
 
 	if (code < 0) {
+		// as for mach_msg above: EINTR from the RPC means the request was never sent to
+		// the server (a signal arrived first), so sending it again is safe
+		if (code == -LINUX_EINTR)
+			goto retry;
 		__simple_printf("semaphore_signal_all failed (internally): %d\n", code);
 		__simple_abort();
 	}
