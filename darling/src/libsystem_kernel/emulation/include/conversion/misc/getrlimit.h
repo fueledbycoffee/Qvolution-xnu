@@ -42,4 +42,13 @@ enum {
 
 unsigned int rlimit_bsd_to_linux(unsigned int which);
 
+// "No limit" differs: Darwin's RLIM_INFINITY is 2^63 - 1 (bsd/sys/resource.h),
+// Linux reports and accepts all ones. Darwin has no limit values above its
+// RLIM_INFINITY, so anything Linux reports there means unlimited.
+#define BSD_RLIM_INFINITY (((unsigned long long)1 << 63) - 1)
+#define LINUX_RLIM_INFINITY (~0ULL)
+
+unsigned long long rlim_value_linux_to_bsd(unsigned long long value);
+unsigned long long rlim_value_bsd_to_linux(unsigned long long value);
+
 #endif // DARLING_CONVERSION_MISC_GETRLIMIT
