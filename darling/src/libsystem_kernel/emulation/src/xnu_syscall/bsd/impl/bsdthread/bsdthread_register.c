@@ -145,11 +145,34 @@ void wqueue_entry_point_wrapper(void* self, int thread_port, void* stackaddr,
 // source in `libpthread/src/pthread_asm.S`.
 void wqueue_entry_point_asm_jump(void* self, int thread_port, void* stackaddr,
 		void* item, int reuse, int nevents) {
-	
+
+	// Every (re)entry into `_start_wqthread` starts on a fresh stack. XNU's workqueue sets
+	// the stack pointer to the thread's stack top on each entry (libpthread
+	// kern/kern_support.c, workq_thread_get_addrs: `self` lies immediately above the
+	// stack and stack_top = self & -C_WORKQ_STK_ALIGN; workq_set_register_state:
+	// rsp/esp = stack_top). `_start_wqthread` builds its frame from the stack pointer it
+	// is given, so jumping to it with the caller's stack pointer keeps every frame from
+	// the previous work item down to workq_kernreturn: about 0.6 KiB per reuse on x86_64,
+	// which overflows the 8 MiB workqueue stack after some 14,000 reuses. Darling
+	// allocates workqueue threads the same way (mldr dthread_structure_allocate: the
+	// dthread sits right above the stack), so `self` aligned down is the top. Nothing
+	// returns into the abandoned frames: a terminating thread leaves through
+	// __darling_thread_terminate's longjmp to the host stack.
+	const uintptr_t stack_top = (uintptr_t)self & ~(uintptr_t)15;
+
 	// No additional function calls should occur beyond this point. Otherwise, we will risk our
 	// registers being call-clobbered. I recommend reading the following doc for more details:
 	// https://gcc.gnu.org/onlinedocs/gcc/Local-Register-Variables.html
+#if __i386__
+	// All six general registers carry arguments, so the entry point travels on the new
+	// stack: store it just below the top (dead space of the previous incarnation, unused
+	// padding on first entry) and `ret` into it, which leaves esp at the top.
+	((uintptr_t*)stack_top)[-1] = (uintptr_t)wqueue_entry_point;
+	uintptr_t entry_sp = stack_top - sizeof(uintptr_t);
+#endif
 #if __x86_64__
+	register uintptr_t top asm("r10") = stack_top;
+	register void* entry asm("r11") = (void*)wqueue_entry_point;
 	register void* arg1 asm("rdi") = self;
 	register int   arg2 asm("esi") = thread_port;
 	register void* arg3 asm("rdx") = stackaddr;
@@ -174,25 +197,31 @@ void wqueue_entry_point_asm_jump(void* self, int thread_port, void* stackaddr,
 
 #if __x86_64__
 	__asm__ __volatile__ (
-		// `_start_wqthread` does not expect the stack to be aligned (using the
-		// call instruction will add the return address to the stack, causing
-		// it to be aligned).
-		"jmpq *%[wqueue_entry_point]\n"
+		// Discard the previous frames: start at the stack top, as XNU does, with no
+		// frame chain. `_start_wqthread` pushes its own sentinel and aligns itself.
+		"movq %[top], %%rsp\n"
+		"xorq %%rbp, %%rbp\n"
+		"jmpq *%[entry]\n"
 		::
 		// Arguments follow the usual x86_64 calling conventions.
 		"r"(arg1),"r"(arg2),"r"(arg3),"r"(arg4),"r"(arg5),"r"(arg6),
-		[wqueue_entry_point] "r"(wqueue_entry_point)
+		[top] "r"(top), [entry] "r"(entry)
+		: "memory"
 	);
 #elif __i386__
 	__asm__ __volatile__ (
-		// `_start_wqthread` does not expect the stack to be aligned.
-		"jmpl *%[wqueue_entry_point]\n"
-		::
+		// Discard the previous frames: esp = top - 4 holds the entry point, and `ret`
+		// jumps there with esp at the stack top, as XNU sets it.
 		// `_start_wqthread` does not follow the i386 calling conventions
 		// for arguments. Instead of storing the arguments into the stack,
 		// the arguments are stored in the registers.
+		"movl %[entry_sp], %%esp\n"
+		"xorl %%ebp, %%ebp\n"
+		"ret\n"
+		::
 		"r"(arg1),"r"(arg2),"r"(arg3),"r"(arg4),"r"(arg5),"r"(arg6),
-		[wqueue_entry_point] "rmi"(wqueue_entry_point)
+		[entry_sp] "m"(entry_sp)
+		: "memory"
 	);
 #elif defined(__aarch64__) || defined(__arm64__)
 	__asm__ __volatile__ (
