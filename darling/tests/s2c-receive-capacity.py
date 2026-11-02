@@ -36,6 +36,7 @@ end = rpc.index('\nint dserver_rpc_interrupt_enter(', start)
 wrapper = rpc[start:end]
 adapter = r'''
 #define _GNU_SOURCE
+#define DARLING_I386_STARTUP_CURRENT(stage) ((void)0)
 #include <assert.h>
 #include <errno.h>
 #include <fcntl.h>

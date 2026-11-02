@@ -75,14 +75,27 @@
 #else
 	#define UNIX_SYSCALL_SYSENTER		call __sysenter_trap
 #endif
+/* Darling handlers return negative errno, not the kernel carry flag. */
+#ifdef DARLING
+#define UNIX_SYSCALL_ERROR(cerror) \
+	cmpl	$-4095, %eax			;\
+	jb	2f				;\
+	negl	%eax				;\
+	BRANCH_EXTERN(tramp_##cerror)		;\
+2:
+#else
+#define UNIX_SYSCALL_ERROR(cerror) \
+	jnb	2f				;\
+	BRANCH_EXTERN(tramp_##cerror)		;\
+2:
+#endif
+
 #define UNIX_SYSCALL(name, nargs)			\
 	.globl	tramp_cerror				;\
 LEAF(_##name, 0)					;\
 	movl	$ SYS_##name, %eax			;\
 	UNIX_SYSCALL_SYSENTER				;\
-	jnb	2f					;\
-	BRANCH_EXTERN(tramp_cerror)  			;\
-2:
+	UNIX_SYSCALL_ERROR(cerror)
 
 #define UNIX_SYSCALL_INT(name, nargs)			\
 	.globl	tramp_cerror				;\
@@ -90,23 +103,19 @@ LEAF(_##name, 0)					;\
 	movl	$ SYS_##name, %eax			;\
 	UNIX_SYSCALL_TRAP				;\
 	jnb	2f					;\
-	BRANCH_EXTERN(tramp_cerror)  			;\
+	BRANCH_EXTERN(tramp_cerror)			;\
 2:
 
 #if defined(__SYSCALL_32BIT_ARG_BYTES) && ((__SYSCALL_32BIT_ARG_BYTES >= 4) && (__SYSCALL_32BIT_ARG_BYTES <= 20))
 #define UNIX_SYSCALL_NONAME(name, nargs, cerror)			\
 	movl	$(SYS_##name | (__SYSCALL_32BIT_ARG_BYTES << I386_SYSCALL_ARG_BYTES_SHIFT)), %eax		;\
 	UNIX_SYSCALL_SYSENTER					;\
-	jnb	2f						;\
-	BRANCH_EXTERN(tramp_##cerror)				;\
-2:
+	UNIX_SYSCALL_ERROR(cerror)
 #else /* __SYSCALL_32BIT_ARG_BYTES < 4 || > 20 */
 #define UNIX_SYSCALL_NONAME(name, nargs, cerror)	\
 	movl	$ SYS_##name, %eax			;\
 	UNIX_SYSCALL_SYSENTER				;\
-	jnb	2f					;\
-	BRANCH_EXTERN(tramp_##cerror)			;\
-2:
+	UNIX_SYSCALL_ERROR(cerror)
 #endif
 
 #define UNIX_SYSCALL_INT_NONAME(name, nargs)		\
@@ -114,7 +123,7 @@ LEAF(_##name, 0)					;\
 	movl	$ SYS_##name, %eax			;\
 	UNIX_SYSCALL_TRAP				;\
 	jnb	2f					;\
-	BRANCH_EXTERN(tramp_cerror_nocancel) 		;\
+	BRANCH_EXTERN(tramp_cerror_nocancel)		;\
 2:
 
 #define PSEUDO(pseudo, name, nargs, cerror)	\

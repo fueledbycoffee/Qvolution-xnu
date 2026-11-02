@@ -34,6 +34,7 @@
 #include "_libkernel_init.h"
 
 #ifdef DARLING
+#include <darling/emulation/common/i386-startup.h>
 extern int mach_init(const char** applep);
 extern void sigexc_setup(void);
 #else
@@ -82,6 +83,10 @@ __libkernel_init(_libkernel_functions_t fns,
     const char *apple[] __attribute__((unused)),
     const struct ProgramVars *vars __attribute__((unused)))
 {
+#ifdef DARLING
+	int startup_records = darling_i386_startup_enabled(envp);
+	DARLING_I386_STARTUP_STAGE(startup_records, "libsystem-libkernel-init-enter");
+#endif
 	_libkernel_functions = fns;
 	if (fns->dlsym) {
 		_dlsym = fns->dlsym;
@@ -89,7 +94,9 @@ __libkernel_init(_libkernel_functions_t fns,
 
 #ifdef DARLING
 	mach_init(apple);
+	DARLING_I386_STARTUP_STAGE(startup_records, "libkernel-sigexc-enter");
 	sigexc_setup();
+	DARLING_I386_STARTUP_STAGE(startup_records, "libkernel-init-return");
 #else
 	mach_init();
 #endif
