@@ -123,7 +123,7 @@ int main(int argc, char **argv) {
  int wide = !strcmp(name, "lseek"), pipe = !strcmp(name, "pipe");
  int time = !strcmp(name, "gettimeofday");
  int fork = !strcmp(name, "fork"), vfork = !strcmp(name, "vfork");
- int values[] = {-9, -1, -4095, -4096, 0, 7, 0x7fffffff, (int)0x80000000u};
+ int values[] = {-24, -9, -1, -4095, -4096, 0, 7, 0x7fffffff, (int)0x80000000u};
  int highs[] = {-1, 0, 1, 0x1234};
  int failed = 0;
  for (carry_flag = 0; carry_flag < 2; ++carry_flag)
@@ -277,7 +277,7 @@ int raw_low, raw_high, carry_flag, observed_errno, __current_pid;
 extern long ___fork(void), ___vfork(void);
 int main(void) {
  long (*calls[])(void) = {___fork, ___vfork};
- int values[] = {-9, -1, -4095, -4096, 0, 7};
+ int values[] = {-24, -9, -1, -4095, -4096, 0, 7};
  int failed = 0;
  for (unsigned w = 0; w < 2; ++w)
  for (carry_flag = 0; carry_flag < 2; ++carry_flag)
