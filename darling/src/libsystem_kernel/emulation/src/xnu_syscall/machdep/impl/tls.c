@@ -34,9 +34,11 @@ unsigned long sys_thread_get_native_tsd_slot_offset(void) {
 }
 static void publish_native_tsd_slot(void* base) {
 #if defined(__aarch64__)
-    __atomic_store_n(&((void**)__builtin_thread_pointer())[8], base, __ATOMIC_RELEASE);
-    if (native_tsd_slot_offset == 8 * sizeof(void*))
+    // Slot 8 only for loaders that name no slot: on Android it is the start of the loader's own ELF TLS.
+    if (native_tsd_slot_offset == ~0UL) {
+        __atomic_store_n(&((void**)__builtin_thread_pointer())[8], base, __ATOMIC_RELEASE);
         return;
+    }
 #endif
     if (native_tsd_slot_offset != ~0UL)
         __atomic_store_n((void**)((uintptr_t)__builtin_thread_pointer() + native_tsd_slot_offset), base, __ATOMIC_RELEASE);
@@ -88,6 +90,13 @@ static inline long current_tid(void)
 __attribute__((visibility("default")))
 void* sys_thread_get_tsd_base(void)
 {
+	/* The loader's slot, where it names one (Android), holds this thread's
+	 * base once it is set: one load instead of a table lookup. */
+	if (native_tsd_slot_offset != ~0UL) {
+		void* base = *(void**)((uintptr_t)__builtin_thread_pointer() + native_tsd_slot_offset);
+		if (base)
+			return base;
+	}
 	long tid = current_tid();
 	unsigned int i = tsd_hash(tid);
 	for (unsigned int step = 0; step < TSD_TABLE_SIZE; step++)

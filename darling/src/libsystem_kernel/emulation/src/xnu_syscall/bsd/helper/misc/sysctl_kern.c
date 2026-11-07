@@ -22,6 +22,9 @@
 #include <darling/emulation/xnu_syscall/bsd/helper/misc/readline.h>
 #include <darling/emulation/common/string.h>
 #include "proc_boottime.h"
+#include <darling/emulation/conversion/common_at.h>
+#include <darling/emulation/conversion/duct_errno.h>
+#include <stdbool.h>
 
 #include <darling-config.h>
 
@@ -234,6 +237,17 @@ struct linux_utsname* need_uname(void)
 	return &lu;
 }
 
+/* Android's seccomp policy kills an app process that calls sethostname or
+ * setdomainname (launchctl bootstrap sets the host name), where elsewhere an
+ * unprivileged caller gets EPERM: that is what it gets there too. */
+static bool on_android(void)
+{
+	static int android = -1;
+	if (android < 0)
+		android = LINUX_SYSCALL(__NR_faccessat, LINUX_AT_FDCWD, "/system/bin/sh", 0, 0) == 0;
+	return android;
+}
+
 sysctl_handler(handle_hostname)
 {
 	int rv = 0;
@@ -243,7 +257,7 @@ sysctl_handler(handle_hostname)
 	
 	if (_new && newlen > 0)
 	{
-		rv = LINUX_SYSCALL(__NR_sethostname, _new, newlen);
+		rv = on_android() ? -LINUX_EPERM : LINUX_SYSCALL(__NR_sethostname, _new, newlen);
 		if (rv < 0)
 			rv = errno_linux_to_bsd(rv);
 	}
@@ -260,7 +274,7 @@ sysctl_handler(handle_domainname)
 	
 	if (_new && newlen > 0)
 	{
-		rv = LINUX_SYSCALL(__NR_setdomainname, _new, newlen);
+		rv = on_android() ? -LINUX_EPERM : LINUX_SYSCALL(__NR_setdomainname, _new, newlen);
 		if (rv < 0)
 			rv = errno_linux_to_bsd(rv);
 	}

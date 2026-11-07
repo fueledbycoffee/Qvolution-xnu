@@ -76,6 +76,13 @@ long sys_fork(void)
 		// This is a direct syscall; it must not allocate or run client callbacks.
 		mach_driver_setup_server_access();
 
+		// Yama's ptrace exception is not inherited, and darlingserver is not
+		// our ancestor, so without it the server cannot read or write our
+		// memory (process_vm_*: EPERM). libc's fork() renews it later in
+		// mach_driver_init, but posix_spawn's child goes straight to execve,
+		// whose first RPC already needs it.
+		LINUX_SYSCALL(__NR_prctl, 0x59616d61 /* PR_SET_PTRACER */, (unsigned long)-1 /* PR_SET_PTRACER_ANY */, 0UL, 0UL, 0UL);
+
 		// the old RPC FD will be closed in `guard_table_postfork_child`;
 		// we don't need to close it ourselves.
 		// that should also take care of closing descriptors for any other threads.

@@ -39,6 +39,7 @@ extern char* strcpy(char* dst, const char* src);
 extern void* memset(void*, int, __SIZE_TYPE__);
 extern void* memcpy(void* dest, const void*, __SIZE_TYPE__);
 extern char *strncpy(char *dest, const char *src, __SIZE_TYPE__ n);
+extern char *strrchr(const char *str, int ch);
 
 int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* buflen)
 {
@@ -166,6 +167,9 @@ const char* next_stat_elem(char** buf)
 {
 	char* start;
 
+	if (!buf || !*buf)
+		return NULL;
+
 	start = *buf;
 
 	if (!*start)
@@ -175,26 +179,39 @@ const char* next_stat_elem(char** buf)
 		char* end;
 
 		start++;
-		end = start;
+		end = strrchr(start, ')');
+		if (!end)
+		{
+			*buf = start + strlen(start);
+			return NULL;
+		}
 
-		while (*end != ')' && *end)
-			end++;
 		*end = '\0';
-		*buf = end+2;
+		end++;
+		if (*end != '\0' && *end == ' ')
+			end++;
+		*buf = end;
+		return start;
 	}
 	else
 	{
 		char* end;
 
 		end = start;
-		while (*end != ' ' && *end)
+		while (*end != ' ' && *end != '\0')
 			end++;
-		*end = '\0';
-		*buf = end+1;
-	}
 
-	// __simple_printf("Next stat elem: %s\n", start);
-	return start;
+		if (*end == ' ')
+		{
+			*end = '\0';
+			*buf = end + 1;
+		}
+		else
+		{
+			*buf = end;
+		}
+		return start;
+	}
 }
 
 void skip_stat_elems(char** buf, int count)
@@ -237,7 +254,8 @@ static struct kinfo_proc_chain* load_proc(const char* name, int what, int flag)
 
 	// comm
 	READELEM();
-	strncpy(kinfo->kinfo.kp_proc.p_comm, elem, sizeof(kinfo->kinfo.kp_proc.p_comm));
+	strncpy(kinfo->kinfo.kp_proc.p_comm, elem, sizeof(kinfo->kinfo.kp_proc.p_comm) - 1);
+	kinfo->kinfo.kp_proc.p_comm[sizeof(kinfo->kinfo.kp_proc.p_comm) - 1] = '\0';
 
 	// process state
 	READELEM();
@@ -283,7 +301,7 @@ static struct kinfo_proc_chain* load_proc(const char* name, int what, int flag)
 	if (kinfo->kinfo.kp_eproc.e_tdev != 0)
 		kinfo->kinfo.kp_proc.p_flag |= P_CONTROLT;
 
-	skip_stat_elems(&statptr, NULL);
+	skip_stat_elems(&statptr, 10);
 
 	READELEM();
 	kinfo->kinfo.kp_proc.p_priority = __simple_atoi(elem, NULL);

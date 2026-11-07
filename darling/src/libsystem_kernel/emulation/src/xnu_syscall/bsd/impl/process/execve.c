@@ -235,11 +235,30 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 				}
 			}
 
-			if (termux_lib && LINUX_SYSCALL(__NR_faccessat, LINUX_AT_FDCWD, termux_lib, 0, 0) == 0) {
+			if (termux_lib && LINUX_SYSCALL(__NR_faccessat, LINUX_AT_FDCWD, termux_lib, 0, 0) != 0)
+				termux_lib = NULL;
+
+			// The host libraries mldr opens (fontconfig, FreeType...) are next to
+			// it: an APK's native libraries. mldr keeps LD_LIBRARY_PATH from
+			// Darwin programs, so a program that another one started would
+			// otherwise not find them.
+			size_t mldr_dir_length = 0;
+			for (size_t i = 0; mldr_path[i]; i++)
+				if (mldr_path[i] == '/')
+					mldr_dir_length = i;
+
+			if (mldr_dir_length > 0 || termux_lib) {
 				add_termux_ld = 1;
-				termux_ld_env = (char*)__builtin_alloca(strlen(termux_lib) + sizeof("LD_LIBRARY_PATH="));
+				termux_ld_env = (char*)__builtin_alloca(sizeof("LD_LIBRARY_PATH=") + mldr_dir_length + 1
+					+ (termux_lib ? strlen(termux_lib) : 0));
 				strcpy(termux_ld_env, "LD_LIBRARY_PATH=");
-				strcat(termux_ld_env, termux_lib);
+				size_t end = strlen(termux_ld_env);
+				memcpy(termux_ld_env + end, mldr_path, mldr_dir_length);
+				termux_ld_env[end + mldr_dir_length] = '\0';
+				if (mldr_dir_length > 0 && termux_lib)
+					strcat(termux_ld_env, ":");
+				if (termux_lib)
+					strcat(termux_ld_env, termux_lib);
 			}
 		}
 
@@ -303,6 +322,15 @@ long sys_execve(const char* fname, const char** argvp, const char** envp)
 
 	LINUX_SYSCALL(__NR_rt_sigprocmask, 0 /* LINUX_SIG_BLOCK */,
 			&set, NULL, sizeof(linux_sigset_t));
+
+	// mldr takes over the lifetime pipe named in __mldr_lifetime_pipe, so it
+	// must survive the execve even if the program marked every descriptor
+	// close-on-exec before exec'ing (APT does, for its download methods).
+	if (is_script || is_macho) {
+		int lifetime_pipe = __dserver_get_process_lifetime_pipe();
+		if (lifetime_pipe >= 0)
+			LINUX_SYSCALL(__NR_fcntl, lifetime_pipe, 2 /* F_SETFD */, 0);
+	}
 
 	// let xtrace inject itself into the execve, if necessary
 	_xtrace_execve_inject(&envp);

@@ -58,19 +58,49 @@
 
 extern void _thread_set_tsd_base(void *tsd_base);
 
+#if defined(DARLING) && defined(__arm64__)
+#ifdef __cplusplus
+extern "C" {
+#endif
+extern void* sys_thread_get_tsd_base(void);
+#ifdef __cplusplus
+}
+#endif
+#endif
+
 __attribute__((always_inline))
 static __inline__ unsigned int
 _os_cpu_number(void)
 {
 #ifdef DARLING
 	extern int __linux_syscall(int nr, ...);
+#if defined(__arm64__)
+	/* arm64 Linux has no getcpu in the vDSO, and malloc asks for every
+	 * allocation (it picks a magazine), so a thread asks the kernel only
+	 * every 256th time and keeps the answer in libmalloc's unused TSD key
+	 * (__PTK_LIBMALLOC_KEY1): the cpu << 8 | the calls left. A stale cpu
+	 * only costs lock contention. */
+	void **tsd = (void **)sys_thread_get_tsd_base();
+	uintptr_t cached = (uintptr_t)tsd[111];
+	if (cached & 0xff) {
+		tsd[111] = (void *)(cached - 1);
+		return (unsigned int)(cached >> 8);
+	}
+#endif
 
 	unsigned int cpu_num = 0;
-	int status = __linux_syscall(__NR_getcpu, &cpu_num, 0, 0, 0, 0, 0);
+	/* __linux_syscall is defined with six longs, not variadic: on arm64 Darwin
+	 * a variadic call passes them on the stack, where it never looks, and the
+	 * kernel sees garbage (getcpu then fails with EFAULT on every call). */
+	int status = ((int (*)(int, long, long, long, long, long, long))__linux_syscall)(
+		__NR_getcpu, (long)&cpu_num, 0, 0, 0, 0, 0);
 	// should we even check? i don't think it's possible for it to fail with these arguments
 	if (status < 0) {
 		return 0; // i guess?
 	}
+#if defined(__arm64__)
+	tsd[111] = (void *)(((uintptr_t)cpu_num << 8) | 0xff);
+#endif
 
 	return cpu_num;
 #else // !DARLING

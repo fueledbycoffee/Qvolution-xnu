@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <sys/proc.h>
 #include <sys/resource.h>
+#include <sys/sysctl.h>
 #include <stddef.h>
 
 #include <darling/emulation/common/base.h>
@@ -41,6 +42,7 @@
 static long _proc_pidinfo(int32_t pid, uint32_t flavor, uint64_t arg, void* buffer, int32_t bufsize);
 static long _proc_pidinfo_pidrusage(int32_t pid, uint32_t flavor, void* buffer, int32_t bufsize);
 static long _proc_pidinfo_vnodepathinfo(int32_t pid, void* buffer, int32_t bufsize);
+static long _proc_listpids(uint32_t type, uint32_t typeinfo, void* buffer, int32_t bufsize);
 
 extern __SIZE_TYPE__ strlen(const char *s);
 extern void *memset(void *s, int c, __SIZE_TYPE__ n);
@@ -48,6 +50,9 @@ extern void *memcpy(void *dest, const void *src, __SIZE_TYPE__ n);
 extern char *strcpy(char *dest, const char *src);
 extern char *strncpy(char *dest, const char *src, __SIZE_TYPE__ n);
 extern int strncmp (const char * str1, const char * str2, __SIZE_TYPE__ num);
+extern void* malloc(__SIZE_TYPE__ len);
+extern void free(void* ptr);
+extern int _sysctl_proc(int what, int flag, struct kinfo_proc* out, unsigned long* buflen);
 
 long sys_proc_info(uint32_t callnum, int32_t pid, uint32_t flavor,
 		uint64_t arg, void* buffer, int32_t bufsize)
@@ -89,23 +94,96 @@ long sys_proc_info(uint32_t callnum, int32_t pid, uint32_t flavor,
 			return _proc_pidinfo_pidrusage(pid, flavor, buffer, bufsize);
 		case 2: // proc_pidinfo
 			return _proc_pidinfo(pid, flavor, arg, buffer, bufsize);
-		case 1: { // proc_listpids (stub: returns own PID)
-			if (buffer == NULL || bufsize == 0) {
-				return sizeof(pid_t);
-			}
-			if ((size_t)bufsize >= sizeof(pid_t)) {
-				pid_t my_pid = sys_getpid();
-				memcpy(buffer, &my_pid, sizeof(pid_t));
-				return sizeof(pid_t);
-			}
-			return -ENOMEM;
-		}
+		case 1: // proc_listpids
+			// `pid` carries the type, `flavor` the typeinfo (pgid, ppid, uid...)
+			return _proc_listpids(pid, flavor, buffer, bufsize);
 		case 3: // proc_pidfdinfo
 		default:
 			__simple_printf("sys_proc_info(): Unsupported callnum: %d\n",
 					callnum);
 			return -ENOTSUP;
 	}
+}
+
+// XNU's proc_listpids() (bsd/kern/proc_info.c), built on the /proc walk that
+// sysctl(KERN_PROC_*) does, so both see the same processes.
+static long _proc_listpids(uint32_t type, uint32_t typeinfo, void* buffer, int32_t bufsize)
+{
+	struct kinfo_proc* procs = NULL;
+	unsigned long len = 0;
+	int what, ret, tries, i, n;
+	uint32_t count = 0, maxpids;
+
+	// A NULL buffer asks for a size: XNU answers (nprocs + 20) pids for
+	// every type, so that a fill right after it is unlikely to come up short.
+	if (buffer == NULL)
+	{
+		ret = _sysctl_proc(KERN_PROC_ALL, 0, NULL, &len);
+		if (ret < 0)
+			return ret;
+		return (len / sizeof(struct kinfo_proc) + 20) * sizeof(int);
+	}
+
+	if ((uint32_t) bufsize < sizeof(int))
+		return -ENOMEM;
+	maxpids = (uint32_t) bufsize / sizeof(int);
+
+	switch (type)
+	{
+		case PROC_ALL_PIDS:
+		case PROC_PPID_ONLY: // filtered below; sysctl has no parent filter
+			what = KERN_PROC_ALL;
+			break;
+		case PROC_PGRP_ONLY:
+			what = KERN_PROC_PGRP;
+			break;
+		case PROC_TTY_ONLY:
+			what = KERN_PROC_TTY;
+			break;
+		case PROC_UID_ONLY:
+			what = KERN_PROC_UID;
+			break;
+		case PROC_RUID_ONLY:
+			what = KERN_PROC_RUID;
+			break;
+		default:
+			// PROC_KDBG_ONLY: no process is kdebug-enabled here. XNU matches
+			// nothing for unknown types either.
+			return 0;
+	}
+
+	// Processes may appear between the size query and the fill; retry.
+	for (tries = 0; ; tries++)
+	{
+		len = 0;
+		ret = _sysctl_proc(what, typeinfo, NULL, &len);
+		if (ret < 0)
+			return ret;
+		len += 20 * sizeof(struct kinfo_proc);
+		procs = (struct kinfo_proc*) malloc(len);
+		if (procs == NULL)
+			return -ENOMEM;
+		ret = _sysctl_proc(what, typeinfo, procs, &len);
+		if (ret != -ENOMEM || tries == 2)
+			break;
+		free(procs);
+	}
+	if (ret < 0)
+	{
+		free(procs);
+		return ret;
+	}
+
+	n = len / sizeof(struct kinfo_proc);
+	for (i = 0; i < n && count < maxpids; i++)
+	{
+		if (type == PROC_PPID_ONLY && procs[i].kp_eproc.e_ppid != (pid_t) typeinfo)
+			continue;
+		((int*) buffer)[count++] = procs[i].kp_proc.p_pid;
+	}
+
+	free(procs);
+	return count * sizeof(int);
 }
 
 static bool parse_smaps_firstline(

@@ -7,8 +7,61 @@
 #include <darling/emulation/linux_premigration/linux-syscalls/linux.h>
 #include <darling/emulation/conversion/common_at.h>
 #include <darling/emulation/linux_premigration/vchroot_expand.h>
+#include <darling/emulation/conversion/fcntl/open.h>
+#include <darling/emulation/conversion/duct_errno.h>
+#include <darling/emulation/conversion/stat/common.h>
+#include <stdbool.h>
+#include <stddef.h>
 
 extern char* strcpy(char* dst, const char* src);
+
+/* Android's SELinux policy refuses apps hard links in their own data (dpkg
+ * keeps its status file's backup with one). There a refused link of a regular
+ * file becomes a copy: both names then have the same contents, which is what
+ * the callers that link to keep a backup need. */
+static bool on_android(void)
+{
+	static int android = -1;
+	if (android < 0)
+		android = LINUX_SYSCALL(__NR_faccessat, LINUX_AT_FDCWD, "/system/bin/sh", 0, 0) == 0;
+	return android;
+}
+
+static int copy_for_link(int dfd, const char* path, int dfdlink, const char* link, int linux_flags)
+{
+	struct linux_stat st;
+	int from, to, ret;
+
+	from = LINUX_SYSCALL(__NR_openat, dfd, path, LINUX_O_RDONLY | LINUX_O_CLOEXEC
+		| ((linux_flags & LINUX_AT_SYMLINK_FOLLOW) ? 0 : LINUX_O_NOFOLLOW));
+	if (from < 0)
+		return from;
+	ret = LINUX_SYSCALL(__NR_fstat, from, &st);
+	if (ret == 0 && (st.st_mode & 0170000) != 0100000)
+		ret = -LINUX_EPERM;
+	if (ret < 0) {
+		LINUX_SYSCALL(__NR_close, from);
+		return ret;
+	}
+	to = LINUX_SYSCALL(__NR_openat, dfdlink, link, LINUX_O_WRONLY | LINUX_O_CREAT | LINUX_O_EXCL | LINUX_O_CLOEXEC,
+		st.st_mode & 07777);
+	if (to < 0) {
+		LINUX_SYSCALL(__NR_close, from);
+		return to;
+	}
+	for (;;) {
+		long n = LINUX_SYSCALL(__NR_sendfile, to, from, NULL, 1 << 20);
+		if (n <= 0) {
+			ret = n;
+			break;
+		}
+	}
+	LINUX_SYSCALL(__NR_close, from);
+	LINUX_SYSCALL(__NR_close, to);
+	if (ret < 0)
+		LINUX_SYSCALL(__NR_unlinkat, dfdlink, link, 0);
+	return ret;
+}
 
 long sys_linkat(int fd, const char* path, int fdlink, const char* link, int flag)
 {
@@ -39,6 +92,12 @@ long sys_linkat(int fd, const char* path, int fdlink, const char* link, int flag
 		return -EINVAL;
 
 	ret = LINUX_SYSCALL(__NR_linkat, vc.dfd, vc.path, vc2.dfd, vc2.path, linux_flags);
+	if ((ret == -LINUX_EACCES || ret == -LINUX_EPERM) && on_android()) {
+		int copied = copy_for_link(vc.dfd, vc.path, vc2.dfd, vc2.path, linux_flags);
+		/* A name that is taken is the link's own error; otherwise report the refusal. */
+		if (copied == 0 || copied == -LINUX_EEXIST)
+			ret = copied;
+	}
 	if (ret < 0)
 		ret = errno_linux_to_bsd(ret);
 

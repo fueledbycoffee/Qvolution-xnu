@@ -8,6 +8,7 @@
 #include <_libkernel_init.h>
 
 #include <darling/emulation/xnu_syscall/bsd/impl/process/execve.h>
+#include <darling/emulation/xnu_syscall/bsd/impl/process/fork.h>
 #include <darling/emulation/common/base.h>
 #include <darling/emulation/conversion/dirent/getdirentries.h>
 #include <darling/emulation/conversion/errno.h>
@@ -70,6 +71,12 @@ long sys_posix_spawn(int* pid, const char* path, const struct _posix_spawn_args_
 		close_internal(pipe[0]);
 
 		// _libkernel_functions->posix_spawn_child();
+
+#if defined(__arm64__) || defined(__aarch64__)
+		// sys_fork defers the darlingserver checkin on arm64 until libSystem's
+		// fork child handlers have run; posix_spawn runs none, so do it here.
+		sys_fork_postfork_child();
+#endif
 
 no_fork:
 		if (desc && desc->attrp)
